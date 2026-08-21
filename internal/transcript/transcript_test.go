@@ -15,6 +15,17 @@ func TestParseWhisperVerboseJSON(t *testing.T) {
 	}
 }
 
+func TestParseWhisperCppTimestampJSON(t *testing.T) {
+	input := []byte(`{"text":"hello","segments":[{"timestamps":{"from":"00:00:01.250","to":"00:00:02.500"},"text":"hello"}]}`)
+	result, err := Parse(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Segments) != 1 || result.Segments[0].StartSeconds != 1.25 || result.Segments[0].EndSeconds != 2.5 {
+		t.Fatalf("unexpected timestamps: %#v", result.Segments)
+	}
+}
+
 func TestMergeAddsSpeakerAndOffset(t *testing.T) {
 	value, err := Merge([]Transcript{{Language: "en", Segments: []Segment{{StartSeconds: 0, EndSeconds: 1, Text: "hello"}}}}, []float64{10}, "ALEXANDER", "123")
 	if err != nil {

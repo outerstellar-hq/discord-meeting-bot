@@ -33,6 +33,11 @@ func Finalize(ctx context.Context, manifest meeting.Manifest, meetingRoot string
 	if transcriber == nil || summarizer == nil {
 		return Result{}, fmt.Errorf("pipeline: transcriber and summarizer are required")
 	}
+	if describer, ok := transcriber.(interface{ Description() map[string]any }); ok {
+		if err := writeJSON(filepath.Join(meetingRoot, "transcriber.json"), describer.Description()); err != nil {
+			return Result{}, err
+		}
+	}
 	perSpeaker := make(map[string][]transcript.Transcript)
 	perSpeakerOffsets := make(map[string][]float64)
 	for _, chunk := range manifest.Chunks {

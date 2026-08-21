@@ -34,7 +34,8 @@ type Config struct {
 	OwnerUserID      string
 	OutputRoot       string
 	FFmpegExecutable string
-	Transcriber      transcribe.Command
+	Video            meeting.VideoConfig
+	Transcriber      transcribe.Transcriber
 	Summarizer       summary.Client
 	ChunkDuration    time.Duration
 }
@@ -46,6 +47,7 @@ type Bot struct {
 	client *bot.Client
 	conn   voice.Conn
 	rec    *meeting.Recorder
+	video  *meeting.VideoRecorder
 	start  time.Time
 }
 
@@ -53,8 +55,11 @@ func NewBot(config Config, logger *slog.Logger) (*Bot, error) {
 	if config.Token == "" || config.GuildID == 0 || config.ChannelID == 0 || config.OwnerUserID == "" {
 		return nil, fmt.Errorf("discord bot: token, guild ID, channel ID, and owner user ID are required")
 	}
-	if config.OutputRoot == "" || config.FFmpegExecutable == "" || config.Transcriber.Executable == "" || len(config.Transcriber.Args) == 0 {
-		return nil, fmt.Errorf("discord bot: output root, FFmpeg executable, and transcriber command are required")
+	if config.OutputRoot == "" || config.FFmpegExecutable == "" || config.Transcriber == nil {
+		return nil, fmt.Errorf("discord bot: output root, FFmpeg executable, and explicit transcriber backend are required")
+	}
+	if config.Video.Enabled && (config.Video.Executable == "" || len(config.Video.Args) == 0) {
+		return nil, fmt.Errorf("discord bot: video recording requires executable and arguments")
 	}
 	if config.Summarizer.Endpoint == "" || config.Summarizer.Model == "" {
 		return nil, fmt.Errorf("discord bot: summary endpoint and model are required")
@@ -145,13 +150,22 @@ func (b *Bot) startRecording(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	meetingRoot := filepath.Join(b.config.OutputRoot, meetingID)
+	video, err := meeting.StartVideo(b.config.Video, meetingRoot)
+	if err != nil {
+		_, _ = recorder.Stop(context.Background(), time.Now().UTC())
+		return err
+	}
 	conn := b.client.VoiceManager.CreateConn(b.config.GuildID)
 	conn.SetOpusFrameReceiver(NewPCMReceiver(recorder))
 	if err := conn.Open(ctx, b.config.ChannelID, false, false); err != nil {
+		_ = video.Stop(context.Background())
+		_, _ = recorder.Stop(context.Background(), time.Now().UTC())
 		return fmt.Errorf("open voice channel: %w", err)
 	}
 	b.rec = recorder
 	b.conn = conn
+	b.video = video
 	b.start = startedAt
 	return nil
 }
@@ -162,13 +176,19 @@ func (b *Bot) stopRecording(ctx context.Context) (meeting.Manifest, error) {
 		b.mu.Unlock()
 		return meeting.Manifest{}, fmt.Errorf("no meeting is recording")
 	}
-	recorder, conn := b.rec, b.conn
-	b.rec, b.conn = nil, nil
+	recorder, conn, video := b.rec, b.conn, b.video
+	b.rec, b.conn, b.video = nil, nil, nil
 	b.mu.Unlock()
 	conn.Close(ctx)
 	manifest, err := recorder.Stop(ctx, time.Now().UTC())
 	if err != nil {
+		if video != nil {
+			_ = video.Stop(context.Background())
+		}
 		return meeting.Manifest{}, err
+	}
+	if err := video.Stop(ctx); err != nil {
+		return manifest, err
 	}
 	go func() {
 		meetingRoot := filepath.Join(b.config.OutputRoot, manifest.MeetingID)
